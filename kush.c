@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <string.h>
-
+#include <signal.h>
 
 #define MAX_LINE       80 /* 80 chars per line, per command, should be enough. */
 
@@ -17,20 +17,21 @@
 #define WRITE_END 1
 
 int parseCommand(char inputBuffer[], char *args[],int *background);
+void killChild(pid_t pid);
 
 int main(void)
 {
   char inputBuffer[MAX_LINE]; 	        /* buffer to hold the command entered */
   int background;             	        /* equals 1 if a command is followed by '&' */
-  char *args[MAX_LINE/2 + 1];	        /* command line (of 80) has max of 40 arguments */
-  pid_t child;            		/* process id of the child process */
+  char *args[MAX_LINE/2 + 1],*args2[2]; /* command line (of 80) has max of 40 arguments */
+  pid_t child, child2;            		/* process id of the child process */
   int status;           		/* result from execv system call*/
   int shouldrun = 1;
 
   int i, upper;
 
-  int pfd[2];
-  char buffer[1024];
+  int pfd[2],pfd2[2];
+  char buffer[1024], buffer2[7];
 
   while (shouldrun){            		/* Program terminates normally inside setup */
     background = 0;
@@ -53,39 +54,73 @@ int main(void)
          exit(-1);
        }
 
+
+       if (pipe(pfd2) < 0) {
+         printf("Failed to create pipe.\n");
+         exit(-1);
+       }
+
        child = fork();
+
        if (child < 0) {
          printf("Failed to fork.\n");
          exit(-1);
        }
 
+
        if (child == 0) {
 
-         printf("Child starts to execute command %s\n", inputBuffer);
+         child2 = fork();
 
-         close(pfd[READ_END]);
-         dup2(STDIN_FILENO,pfd[WRITE_END]);  // send stdout to the pipe
-        // dup2(pfd[1], 2);  // send stderr to the pipe
-         close(pfd[WRITE_END]);
-         execv(inputBuffer, args);
-         return 0;
+         if(child2 == 0){
+           close(pfd2[READ_END]);
+           dup2(pfd2[WRITE_END],fileno(stdout));  // send stdout to the pipe
 
-       } else {
+           args2[0] = "/usr/bin/which";
+           args2[1] = args[0];
+
+           execv("/usr/bin/which", args2);
+           return 0;
+
+           } else {
+
+            close(pfd2[WRITE_END]);
+            read(pfd2[READ_END], buffer2, sizeof(buffer2));
+            killChild(child2);
+            printf("Child: Starting to execute command %s\n", buffer2);
+
+            args[0] = buffer2;
+
+            close(pfd[READ_END]);
+            dup2(pfd[WRITE_END],fileno(stdout));  // send stdout to the pipe
+            execv(buffer2, args);
+
+            return 0;
+          }
+        } else {
          if( background ) {
            printf("Process is in background. Parent keeps running...\n");
            close(pfd[READ_END]);
            close(pfd[WRITE_END]);
          } else {
-           printf("Parent is waiting...\n");
+          //  printf("Parent is waiting...\n");
            close(pfd[WRITE_END]);
            read(pfd[READ_END], buffer, sizeof(buffer));
-           printf("%s\n", buffer);
+           killChild(child);
+           printf("Parent: %s\n", buffer);
            wait();
+
+          //  printf("%s \n", "Parent: Killing child");
          }
        }
     }
   }
   return 0;
+}
+
+void killChild(pid_t pid)
+{
+  kill(pid, SIGUSR1);
 }
 
 /**
