@@ -23,7 +23,7 @@ int main(void)
 {
   char inputBuffer[MAX_LINE]; 	        /* buffer to hold the command entered */
   int background;             	        /* equals 1 if a command is followed by '&' */
-  char *args[MAX_LINE/2 + 1],*args2[2]; /* command line (of 80) has max of 40 arguments */
+  char *args[MAX_LINE/2 + 1],*args2[2],*args3[2]; /* command line (of 80) has max of 40 arguments */
   pid_t execchild, whereischild, whichchild;            		/* process id of the child process */
   int status;           		/* result from execv system call*/
   int shouldrun = 1;
@@ -31,7 +31,7 @@ int main(void)
   int i, upper, err;
 
   int pfd[2],pfd2[2],pfd3[2];
-  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128];
+  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128], *oldpwdbuffer, *pwdbuffer;
   int whereislength, commandLength, outLength;
 
   while (shouldrun){            		/* Program terminates normally inside setup */
@@ -39,11 +39,36 @@ int main(void)
 
     shouldrun = parseCommand(inputBuffer,args,&background);       /* get next command */
 
-    if (strcmp(inputBuffer, "exit") == 0)
+    if (strcmp(inputBuffer, "exit") == 0) {
       shouldrun = 0;     /* Exiting from kush*/
-
-    if (strcmp(inputBuffer, "clear") == 0) {
+    } else if (strcmp(inputBuffer, "clear") == 0) {
       printf("\e[H\e[2J");
+      continue;
+    } else if (strcmp(inputBuffer, "cd") == 0) {
+      if (args[1] == NULL) {
+        oldpwdbuffer = malloc(128);
+        strcpy(oldpwdbuffer,"OLDPWD=");
+        strcat(oldpwdbuffer,getenv("PWD"));
+        putenv(oldpwdbuffer);
+        pwdbuffer = malloc(128);
+        strcpy(pwdbuffer,"PWD=/");
+        putenv(pwdbuffer);
+        chdir("/");
+      } else {
+        oldpwdbuffer = malloc(128);
+        strcpy(oldpwdbuffer,"OLDPWD=");
+        strcat(oldpwdbuffer,getenv("PWD"));
+        putenv(oldpwdbuffer);
+        pwdbuffer = malloc(128);
+        strcpy(pwdbuffer,"PWD=");
+        if (args[1][0] != '/') {
+          strcat(pwdbuffer,getenv("PWD"));
+          strcat(pwdbuffer,"/");
+        }
+        strcat(pwdbuffer,args[1]);
+        putenv(pwdbuffer);
+        chdir(getenv("PWD"));
+      }
       continue;
     }
 
@@ -60,7 +85,7 @@ int main(void)
         exit(-1);
       }
 
-      printf("Parent\n");
+      //printf("Parent\n");
       if ((execchild = fork()) < 0) {
         printf("Failed to fork.\n");
         exit(-1);
@@ -68,78 +93,87 @@ int main(void)
 
 
       if (execchild == 0) {
-        printf("Execchild\n");
-        if (whichchild = fork() < 0) {
+        //printf("Execchild\n");
+        if ((whichchild = fork()) < 0) {
           printf("Failed to fork.\n");
           exit(-1);
         }
 
         if(whichchild == 0){
-          printf("Whichchild\n");
+          //printf("Whichchild\n");
           if ((whereischild = fork()) < 0) {
             printf("Failed to fork.\n");
             exit(-1);
           }
 
-          if (whereischild == 0 ) {
-            printf("Wherischild\n");
+          if (whereischild == 0) {
+            //printf("Wherischild\n");
             close(pfd3[READ_END]);
 
-            args2[0] = "/usr/bin/whereis";
-            args2[1] = args[0];
+            args3[0] = "/usr/bin/whereis";
+            args3[1] = args[0];
 
-            printf("[whereis]: %s []\n", args[0]);
+            //printf("[whereis]: %s []\n", args[0]);
 
             dup2(pfd3[WRITE_END],fileno(stdout));  // send stdout to the pipe
 
-            if (execv(args2[0], args2) == -1) {
+            if (execv(args3[0], args3) == -1) {
               perror("whereis error\n");
             }
 
           } else {
             close(pfd2[READ_END]);
             close(pfd3[WRITE_END]);
-            printf("waiting to read whereis result\n");
+            //printf("waiting to read whereis result\n");
             whereislength = read(pfd3[READ_END], whereisbuffer, sizeof(whereisbuffer));
             whereislength = whereislength / 2;
             killChild(whereischild);
-            printf("Whereislength: %d.\n", whereislength);
-            printf("Whereischild answer: %s\n", whereisbuffer);
-            //dup2(pfd2[WRITE_END],fileno(stdout));
-            if (whereisbuffer[whereislength] == '\0') {
-              printf("T\n");
+            //printf("Whereislength: %d\n", whereislength);
+            //printf("Whereis2ndchar: %c\n", whereisbuffer[4]);
+            //printf("Whereis output: %s endo\n", whereisbuffer);
+            dup2(pfd2[WRITE_END],fileno(stdout));
+            wait();
+            if (whereisbuffer[whereislength-2] == ':') {
+              printf("!F\n");
+              return 0;
             } else {
-              printf("F\n");
+              args2[0] = "/usr/bin/which";
+              args2[1] = args[0];
+              if (execv(args2[0], args2) == -1) {
+                perror("which error\n");
+              }
             }
           }
         } else {
 
           close(pfd2[WRITE_END]);
-          printf("waiting to read which result\n");
+          //printf("waiting to read which result\n");
           commandLength = read(pfd2[READ_END], whichbuffer, sizeof(whichbuffer));
+          //commandLength = commandLength /2;
           killChild(whichchild);
-          printf("Commandlength: %d.\n", (int)commandLength / 2);
-          printf("Whichchild answer: %s\n", whichbuffer);
+          //printf("Commandlength: %d.\n", commandLength);
+
           for(i = 0; i < commandLength; i++) {
             if (whichbuffer[i] == '\n'){
+              //printf("Command is %d long\n", i);
               whichbuffer[i] = '\0';
               break;
             }
           }
+          wait();
+          //printf("Child: Starting to execute command: %s :child\n", whichbuffer);
 
-          printf("Child: Starting to execute command: %s:child\n", whichbuffer);
-
-          if (commandLength > 1) {
-            args[0] = whichbuffer;
-
-            close(pfd[READ_END]);
-            dup2(pfd[WRITE_END],fileno(stdout));  // send stdout to the pipe
-            execv(whichbuffer, args);
-          } else {
+          close(pfd[READ_END]);
+          dup2(pfd[WRITE_END],fileno(stdout));  // send stdout to the pipe
+          if (whichbuffer[0] == '!') {
             printf("%s: command not found\n", args[0]);
+          } else {
+            args[0] = whichbuffer;
+            if (execv(args[0], args) == -1) {
+              perror("exec error\n");
+            }
           }
         }
-        printf("returning 0\n");
         return 0;
       } else {
         if( background ) {
@@ -151,10 +185,10 @@ int main(void)
           close(pfd[WRITE_END]);
           outLength = read(pfd[READ_END], outputbuffer, sizeof(outputbuffer));
           killChild(execchild);
-          //buffer[outLength-1] = '\0';
-          printf("outLength: %d\n",outLength);
+          outputbuffer[outLength-1] = '\0';
+          //printf("outLength: %d\n",outLength);
           if (outLength > 0)
-            printf("Out: %s\n",outputbuffer);
+            printf("%s\n",outputbuffer);
           wait();
 
           //  printf("%s \n", "Parent: Killing child");
@@ -189,7 +223,7 @@ int parseCommand(char inputBuffer[], char *args[],int *background)
 
   /* read what the user enters on the command line */
   do {
-    printf("kush> ");
+    printf("kush[%s]\\> ",getenv("PWD"));
     fflush(stdout);
     length = read(STDIN_FILENO,inputBuffer,MAX_LINE);
   }
