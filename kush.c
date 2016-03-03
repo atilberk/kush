@@ -1,6 +1,6 @@
 /**
- * KUSH shell interface program
- */
+* KUSH shell interface program
+*/
 
 #include <stdio.h>
 #include <unistd.h>
@@ -24,95 +24,141 @@ int main(void)
   char inputBuffer[MAX_LINE]; 	        /* buffer to hold the command entered */
   int background;             	        /* equals 1 if a command is followed by '&' */
   char *args[MAX_LINE/2 + 1],*args2[2]; /* command line (of 80) has max of 40 arguments */
-  pid_t child, child2;            		/* process id of the child process */
+  pid_t execchild, whereischild, whichchild;            		/* process id of the child process */
   int status;           		/* result from execv system call*/
   int shouldrun = 1;
 
-  int i, upper;
+  int i, upper, err;
 
-  int pfd[2],pfd2[2];
-  char buffer[1024], buffer2[7];
+  int pfd[2],pfd2[2],pfd3[2];
+  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128];
+  int whereislength, commandLength, outLength;
 
   while (shouldrun){            		/* Program terminates normally inside setup */
     background = 0;
 
     shouldrun = parseCommand(inputBuffer,args,&background);       /* get next command */
 
-    if (strncmp(inputBuffer, "exit", 4) == 0)
+    if (strcmp(inputBuffer, "exit") == 0)
       shouldrun = 0;     /* Exiting from kush*/
+
+    if (strcmp(inputBuffer, "clear") == 0) {
+      printf("\e[H\e[2J");
+      continue;
+    }
 
     if (shouldrun) {
       /*
-	After reading user input, the steps are
-	(1) Fork a child process using fork()
-	(2) the child process will invoke execv()
-	(3) if command included &, parent will invoke wait()
-       */
+      After reading user input, the steps are
+      (1) Fork a child process using fork()
+      (2) the child process will invoke execv()
+      (3) if command included &, parent will invoke wait()
+      */
 
-       if (pipe(pfd) < 0) {
-         printf("Failed to create pipe.\n");
-         exit(-1);
-       }
+      if (pipe(pfd) < 0 || pipe(pfd2) < 0 || pipe(pfd3) < 0) {
+        printf("Failed to create pipe.\n");
+        exit(-1);
+      }
 
-
-       if (pipe(pfd2) < 0) {
-         printf("Failed to create pipe.\n");
-         exit(-1);
-       }
-
-       child = fork();
-
-       if (child < 0) {
-         printf("Failed to fork.\n");
-         exit(-1);
-       }
+      printf("Parent\n");
+      if ((execchild = fork()) < 0) {
+        printf("Failed to fork.\n");
+        exit(-1);
+      }
 
 
-       if (child == 0) {
+      if (execchild == 0) {
+        printf("Execchild\n");
+        if (whichchild = fork() < 0) {
+          printf("Failed to fork.\n");
+          exit(-1);
+        }
 
-         child2 = fork();
+        if(whichchild == 0){
+          printf("Whichchild\n");
+          if (whereischild = fork() < 0) {
+            printf("Failed to fork.\n");
+            exit(-1);
+          }
 
-         if(child2 == 0){
-           close(pfd2[READ_END]);
-           dup2(pfd2[WRITE_END],fileno(stdout));  // send stdout to the pipe
+          if (whereischild == 0 ) {
+            printf("Wherischild\n");
+            close(pfd3[READ_END]);
 
-           args2[0] = "/usr/bin/which";
-           args2[1] = args[0];
+            args2[0] = "/usr/bin/whereis";
+            args2[1] = args[0];
 
-           execv("/usr/bin/which", args2);
-           return 0;
+            printf("[whereis]: %s []\n", args[0]);
 
-           } else {
+            dup2(pfd3[WRITE_END],fileno(stdout));  // send stdout to the pipe
 
-            close(pfd2[WRITE_END]);
-            read(pfd2[READ_END], buffer2, sizeof(buffer2));
-            killChild(child2);
-            printf("Child: Starting to execute command %s\n", buffer2);
+            if (execv(args2[0], args2) == -1) {
+              perror("whereis error\n");
+            }
 
-            args[0] = buffer2;
+          } else {
+            close(pfd2[READ_END]);
+            close(pfd3[WRITE_END]);
+            printf("waiting to read whereis result\n");
+            whereislength = read(pfd3[READ_END], whereisbuffer, sizeof(whereisbuffer));
+            whereislength = whereislength / 2;
+            killChild(whereischild);
+            printf("Whereislength: %d.\n", whereislength);
+            //dup2(pfd2[WRITE_END],fileno(stdout));
+            if (whereisbuffer[whereislength] == '\0') {
+              printf("T\n");
+            } else {
+              printf("F\n");
+            }
+          }
+        } else {
+
+          close(pfd2[WRITE_END]);
+          printf("waiting to read which result\n");
+          commandLength = read(pfd2[READ_END], whichbuffer, sizeof(whichbuffer));
+          killChild(whichchild);
+          printf("Commandlength: %d.\n", (int)commandLength / 2);
+
+          for(i = 0; i < commandLength; i++) {
+            if (whichbuffer[i] == '\n'){
+              whichbuffer[i] = '\0';
+              break;
+            }
+          }
+
+          printf("Child: Starting to execute command: %s:child\n", whichbuffer);
+
+          if (commandLength > 1) {
+            args[0] = whichbuffer;
 
             close(pfd[READ_END]);
             dup2(pfd[WRITE_END],fileno(stdout));  // send stdout to the pipe
-            execv(buffer2, args);
-
-            return 0;
+            execv(whichbuffer, args);
+          } else {
+            printf("%s: command not found\n", args[0]);
           }
+        }
+        printf("returning 0\n");
+        return 0;
+      } else {
+        if( background ) {
+          printf("Process is in background. Parent keeps running...\n");
+          close(pfd[READ_END]);
+          close(pfd[WRITE_END]);
         } else {
-         if( background ) {
-           printf("Process is in background. Parent keeps running...\n");
-           close(pfd[READ_END]);
-           close(pfd[WRITE_END]);
-         } else {
           //  printf("Parent is waiting...\n");
-           close(pfd[WRITE_END]);
-           read(pfd[READ_END], buffer, sizeof(buffer));
-           killChild(child);
-           printf("Parent: %s\n", buffer);
-           wait();
+          close(pfd[WRITE_END]);
+          outLength = read(pfd[READ_END], outputbuffer, sizeof(outputbuffer));
+          killChild(execchild);
+          //buffer[outLength-1] = '\0';
+          printf("outLength: %d\n",outLength);
+          if (outLength > 0)
+            printf("Out: %s\n",outputbuffer);
+          wait();
 
           //  printf("%s \n", "Parent: Killing child");
-         }
-       }
+        }
+      }
     }
   }
   return 0;
@@ -124,99 +170,99 @@ void killChild(pid_t pid)
 }
 
 /**
- * The parseCommand function below will not return any value, but it will just: read
- * in the next command line; separate it into distinct arguments (using blanks as
- * delimiters), and set the args array entries to point to the beginning of what
- * will become null-terminated, C-style strings.
- */
+* The parseCommand function below will not return any value, but it will just: read
+* in the next command line; separate it into distinct arguments (using blanks as
+* delimiters), and set the args array entries to point to the beginning of what
+* will become null-terminated, C-style strings.
+*/
 
 int parseCommand(char inputBuffer[], char *args[],int *background)
 {
-    int length,		/* # of characters in the command line */
-      i,		/* loop index for accessing inputBuffer array */
-      start,		/* index where beginning of next command parameter is */
-      ct,	        /* index of where to place the next parameter into args[] */
-      command_number;	/* index of requested command number */
+  int length,		/* # of characters in the command line */
+  i,		/* loop index for accessing inputBuffer array */
+  start,		/* index where beginning of next command parameter is */
+  ct,	        /* index of where to place the next parameter into args[] */
+  command_number;	/* index of requested command number */
 
-    ct = 0;
+  ct = 0;
 
-    /* read what the user enters on the command line */
-    do {
-	  printf("kush> ");
-	  fflush(stdout);
-	  length = read(STDIN_FILENO,inputBuffer,MAX_LINE);
-    }
-    while (inputBuffer[0] == '\n'); /* swallow newline characters */
+  /* read what the user enters on the command line */
+  do {
+    printf("kush> ");
+    fflush(stdout);
+    length = read(STDIN_FILENO,inputBuffer,MAX_LINE);
+  }
+  while (inputBuffer[0] == '\n'); /* swallow newline characters */
 
-    /**
-     *  0 is the system predefined file descriptor for stdin (standard input),
-     *  which is the user's screen in this case. inputBuffer by itself is the
-     *  same as &inputBuffer[0], i.e. the starting address of where to store
-     *  the command that is read, and length holds the number of characters
-     *  read in. inputBuffer is not a null terminated C-string.
-     */
-    start = -1;
-    if (length == 0)
-      exit(0);            /* ^d was entered, end of user command stream */
+  /**
+  *  0 is the system predefined file descriptor for stdin (standard input),
+  *  which is the user's screen in this case. inputBuffer by itself is the
+  *  same as &inputBuffer[0], i.e. the starting address of where to store
+  *  the command that is read, and length holds the number of characters
+  *  read in. inputBuffer is not a null terminated C-string.
+  */
+  start = -1;
+  if (length == 0)
+  exit(0);            /* ^d was entered, end of user command stream */
 
-    /**
-     * the <control><d> signal interrupted the read system call
-     * if the process is in the read() system call, read returns -1
-     * However, if this occurs, errno is set to EINTR. We can check this  value
-     * and disregard the -1 value
-     */
+  /**
+  * the <control><d> signal interrupted the read system call
+  * if the process is in the read() system call, read returns -1
+  * However, if this occurs, errno is set to EINTR. We can check this  value
+  * and disregard the -1 value
+  */
 
-    if ( (length < 0) && (errno != EINTR) ) {
-      perror("error reading the command");
-      exit(-1);           /* terminate with error code of -1 */
-    }
+  if ( (length < 0) && (errno != EINTR) ) {
+    perror("error reading the command");
+    exit(-1);           /* terminate with error code of -1 */
+  }
 
-    /**
-     * Parse the contents of inputBuffer
-     */
+  /**
+  * Parse the contents of inputBuffer
+  */
 
-    for (i=0;i<length;i++) {
-      /* examine every character in the inputBuffer */
+  for (i=0;i<length;i++) {
+    /* examine every character in the inputBuffer */
 
-      switch (inputBuffer[i]){
+    switch (inputBuffer[i]){
       case ' ':
       case '\t' :               /* argument separators */
-	if(start != -1){
-	  args[ct] = &inputBuffer[start];    /* set up pointer */
-	  ct++;
-	}
-	inputBuffer[i] = '\0'; /* add a null char; make a C string */
-	start = -1;
-	break;
+      if(start != -1){
+        args[ct] = &inputBuffer[start];    /* set up pointer */
+        ct++;
+      }
+      inputBuffer[i] = '\0'; /* add a null char; make a C string */
+      start = -1;
+      break;
 
       case '\n':                 /* should be the final char examined */
-	if (start != -1){
-	  args[ct] = &inputBuffer[start];
-	  ct++;
-	}
-	inputBuffer[i] = '\0';
-	args[ct] = NULL; /* no more arguments to this command */
-	break;
+      if (start != -1){
+        args[ct] = &inputBuffer[start];
+        ct++;
+      }
+      inputBuffer[i] = '\0';
+      args[ct] = NULL; /* no more arguments to this command */
+      break;
 
       default :             /* some other character */
-	if (start == -1)
-	  start = i;
-	if (inputBuffer[i] == '&') {
-	  *background  = 1;
-	  inputBuffer[i-1] = '\0';
-	}
-      } /* end of switch */
-    }    /* end of for */
+      if (start == -1)
+      start = i;
+      if (inputBuffer[i] == '&') {
+        *background  = 1;
+        inputBuffer[i-1] = '\0';
+      }
+    } /* end of switch */
+  }    /* end of for */
 
-    /**
-     * If we get &, don't enter it in the args array
-     */
+  /**
+  * If we get &, don't enter it in the args array
+  */
 
-    if (*background)
-      args[--ct] = NULL;
+  if (*background)
+  args[--ct] = NULL;
 
-    args[ct] = NULL; /* just in case the input line was > 80 */
+  args[ct] = NULL; /* just in case the input line was > 80 */
 
-    return 1;
+  return 1;
 
 } /* end of parseCommand routine */
