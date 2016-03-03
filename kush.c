@@ -18,6 +18,7 @@
 
 int parseCommand(char inputBuffer[], char *args[],int *background);
 void killChild(pid_t pid);
+void cd(char* args[]);
 
 int main(void)
 {
@@ -31,7 +32,7 @@ int main(void)
   int i, upper, err;
 
   int pfd[2],pfd2[2],pfd3[2];
-  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128], *oldpwdbuffer, *pwdbuffer;
+  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128];
   int whereislength, commandLength, outLength;
 
   while (shouldrun){            		/* Program terminates normally inside setup */
@@ -45,30 +46,7 @@ int main(void)
       printf("\e[H\e[2J");
       continue;
     } else if (strcmp(inputBuffer, "cd") == 0) {
-      if (args[1] == NULL) {
-        oldpwdbuffer = malloc(128);
-        strcpy(oldpwdbuffer,"OLDPWD=");
-        strcat(oldpwdbuffer,getenv("PWD"));
-        putenv(oldpwdbuffer);
-        pwdbuffer = malloc(128);
-        strcpy(pwdbuffer,"PWD=/");
-        putenv(pwdbuffer);
-        chdir("/");
-      } else {
-        oldpwdbuffer = malloc(128);
-        strcpy(oldpwdbuffer,"OLDPWD=");
-        strcat(oldpwdbuffer,getenv("PWD"));
-        putenv(oldpwdbuffer);
-        pwdbuffer = malloc(128);
-        strcpy(pwdbuffer,"PWD=");
-        if (args[1][0] != '/') {
-          strcat(pwdbuffer,getenv("PWD"));
-          strcat(pwdbuffer,"/");
-        }
-        strcat(pwdbuffer,args[1]);
-        putenv(pwdbuffer);
-        chdir(getenv("PWD"));
-      }
+      cd(args);
       continue;
     }
 
@@ -202,6 +180,34 @@ int main(void)
 void killChild(pid_t pid)
 {
   kill(pid, SIGUSR1);
+}
+
+void cd(char* args[]) {
+  char *oldpwdbuffer, *pwdbuffer;
+  if (args[1] == NULL) {
+    oldpwdbuffer = malloc(128);
+    strcpy(oldpwdbuffer,"OLDPWD=");
+    strcat(oldpwdbuffer,getenv("PWD"));
+    putenv(oldpwdbuffer);
+    pwdbuffer = malloc(128);
+    strcpy(pwdbuffer,"PWD=");
+    putenv(pwdbuffer);
+    chdir("/");
+  } else {
+    oldpwdbuffer = malloc(128);
+    strcpy(oldpwdbuffer,"OLDPWD=");
+    strcat(oldpwdbuffer,getenv("PWD"));
+    putenv(oldpwdbuffer);
+    pwdbuffer = malloc(128);
+    strcpy(pwdbuffer,"PWD=");
+    if (args[1][0] != '/') {
+      strcat(pwdbuffer,getenv("PWD"));
+      strcat(pwdbuffer,"/");
+    }
+    strcat(pwdbuffer,args[1]);
+    putenv(pwdbuffer);
+    chdir(getenv("PWD"));
+  }
 }
 
 /**
