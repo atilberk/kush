@@ -76,7 +76,7 @@ int main(void)
 
         if(whichchild == 0){
           printf("Whichchild\n");
-          if (whereischild = fork() < 0) {
+          if ((whereischild = fork()) < 0) {
             printf("Failed to fork.\n");
             exit(-1);
           }
@@ -104,6 +104,7 @@ int main(void)
             whereislength = whereislength / 2;
             killChild(whereischild);
             printf("Whereislength: %d.\n", whereislength);
+            printf("Whereischild answer: %s\n", whereisbuffer);
             //dup2(pfd2[WRITE_END],fileno(stdout));
             if (whereisbuffer[whereislength] == '\0') {
               printf("T\n");
@@ -118,7 +119,7 @@ int main(void)
           commandLength = read(pfd2[READ_END], whichbuffer, sizeof(whichbuffer));
           killChild(whichchild);
           printf("Commandlength: %d.\n", (int)commandLength / 2);
-
+          printf("Whichchild answer: %s\n", whichbuffer);
           for(i = 0; i < commandLength; i++) {
             if (whichbuffer[i] == '\n'){
               whichbuffer[i] = '\0';
