@@ -92,7 +92,8 @@ int main(void)
             args3[0] = "/usr/bin/whereis";
             args3[1] = args[0];
 
-            //printf("[whereis]: %s []\n", args[0]);
+            args3[2] = NULL;
+            args3[3] = NULL;
 
             dup2(pfd3[WRITE_END],fileno(stdout));  // send stdout to the pipe
 
@@ -105,11 +106,11 @@ int main(void)
             close(pfd3[WRITE_END]);
             //printf("waiting to read whereis result\n");
             whereislength = read(pfd3[READ_END], whereisbuffer, sizeof(whereisbuffer));
-            whereislength = whereislength / 2;
+            // whereislength = whereislength / 2;
             killChild(whereischild);
-            //printf("Whereislength: %d\n", whereislength);
-            //printf("Whereis2ndchar: %c\n", whereisbuffer[4]);
-            //printf("Whereis output: %s endo\n", whereisbuffer);
+            // printf("Whereislength: %d\n", whereislength);
+            // printf("Whereis2ndchar: %c\n", whereisbuffer[4]);
+            // printf("Whereis output: %s endo\n", whereisbuffer);
             dup2(pfd2[WRITE_END],fileno(stdout));
             wait();
             if (whereisbuffer[whereislength-2] == ':') {
