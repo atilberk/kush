@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <signal.h>
 
@@ -166,7 +167,7 @@ int main(void)
           outputbuffer[outLength-1] = '\0';
           //printf("outLength: %d\n",outLength);
           if (outLength > 0)
-            printf("%s\n",outputbuffer);
+          printf("%s\n",outputbuffer);
           wait();
 
           //  printf("%s \n", "Parent: Killing child");
@@ -183,30 +184,43 @@ void killChild(pid_t pid)
 }
 
 void cd(char* args[]) {
-  char *oldpwdbuffer, *pwdbuffer;
+  char path[1024], pwdbuffer[1024];
+  struct stat s;
+  int err;
+
   if (args[1] == NULL) {
-    oldpwdbuffer = malloc(128);
-    strcpy(oldpwdbuffer,"OLDPWD=");
-    strcat(oldpwdbuffer,getenv("PWD"));
-    putenv(oldpwdbuffer);
-    pwdbuffer = malloc(128);
-    strcpy(pwdbuffer,"PWD=");
-    putenv(pwdbuffer);
-    chdir("/");
+    strcpy(path, getenv("HOME"));
+  } else if (args[1][0] == '/') {
+    strcpy(path, args[1]);
+  } else if (args[1][0] == '~') {
+    strcpy(path, getenv("HOME"));
+    strcat(path, args[1]+1);
   } else {
-    oldpwdbuffer = malloc(128);
-    strcpy(oldpwdbuffer,"OLDPWD=");
-    strcat(oldpwdbuffer,getenv("PWD"));
-    putenv(oldpwdbuffer);
-    pwdbuffer = malloc(128);
-    strcpy(pwdbuffer,"PWD=");
-    if (args[1][0] != '/') {
-      strcat(pwdbuffer,getenv("PWD"));
-      strcat(pwdbuffer,"/");
+    strcpy(path, getenv("PWD"));
+    strcat(path, "/");
+    strcat(path, args[1]);
+  }
+  getcwd(pwdbuffer, sizeof(pwdbuffer));
+  //printf("cwd: %s\n", pwdbuffer);
+  //printf("path: %s\n", path);
+
+  err = stat(path, &s);
+  if(-1 == err) {
+    if(ENOENT == errno) {
+      printf("cd: No such file or directory: %s\n", args[1]);
+    } else {
+      perror("stat");
+      exit(1);
     }
-    strcat(pwdbuffer,args[1]);
-    putenv(pwdbuffer);
-    chdir(getenv("PWD"));
+  } else if(! S_ISDIR(s.st_mode)) {
+    printf("cd: Not a directory: %s\n", args[1]);
+  }
+  chdir(path);
+  pwdbuffer[0] = '\0';
+  getcwd(pwdbuffer, sizeof(pwdbuffer));
+  if (strcmp(pwdbuffer, getenv("PWD")) != 0) {
+    setenv("OLDPWD", getenv("PWD"), 1);
+    setenv("PWD", pwdbuffer, 1);
   }
 }
 
