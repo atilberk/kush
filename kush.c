@@ -19,13 +19,39 @@
 
 int parseCommand(char inputBuffer[], char *args[],int *background);
 void killChild(pid_t pid);
+void whereiscall(int* pfdout, char* cmd);
 void cd(char* args[]);
+void trash(char* args[]);
+
+void init(void) {
+  char kushdir[64], cmd[70];
+  struct stat sb;
+
+  printf("Welcome to kush.\n");
+
+  strcpy(kushdir, getenv("HOME"));
+  strcat(kushdir, "/.kush");
+
+  if (stat(kushdir, &sb) == 0 && S_ISDIR(sb.st_mode))
+  {
+    // dir exists
+  }
+  else
+  {
+    /* Directory does not exist. */
+    printf("kush directory does not exist.\n");
+    strcpy(cmd,"mkdir ");
+    strcat(cmd,kushdir);
+    system(cmd);
+    printf("kush directory created under home: %s\n", kushdir);
+  }
+}
 
 int main(void)
 {
   char inputBuffer[MAX_LINE]; 	        /* buffer to hold the command entered */
   int background;             	        /* equals 1 if a command is followed by '&' */
-  char *args[MAX_LINE/2 + 1],*args2[2],*args3[2]; /* command line (of 80) has max of 40 arguments */
+  char *args[MAX_LINE/2 + 1],*args2[2]; /* command line (of 80) has max of 40 arguments */
   pid_t execchild, whereischild, whichchild;            		/* process id of the child process */
   int status;           		/* result from execv system call*/
   int shouldrun = 1;
@@ -35,6 +61,8 @@ int main(void)
   int pfd[2],pfd2[2],pfd3[2];
   char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128];
   int whereislength, commandLength, outLength;
+
+  init();
 
   while (shouldrun){            		/* Program terminates normally inside setup */
     background = 0;
@@ -48,6 +76,9 @@ int main(void)
       continue;
     } else if (strcmp(inputBuffer, "cd") == 0) {
       cd(args);
+      continue;
+    } else if (strcmp(inputBuffer, "trash") == 0) {
+      trash(args);
       continue;
     }
 
@@ -87,19 +118,7 @@ int main(void)
 
           if (whereischild == 0) {
             //printf("Wherischild\n");
-            close(pfd3[READ_END]);
-
-            args3[0] = "/usr/bin/whereis";
-            args3[1] = args[0];
-
-            args3[2] = NULL;
-            args3[3] = NULL;
-
-            dup2(pfd3[WRITE_END],fileno(stdout));  // send stdout to the pipe
-
-            if (execv(args3[0], args3) == -1) {
-              perror("whereis error\n");
-            }
+            whereiscall(pfd3,args[0]);
 
           } else {
             close(pfd2[READ_END]);
@@ -179,9 +198,136 @@ int main(void)
   return 0;
 }
 
+void trash(char* args[]) {
+  FILE *file, *file2;
+  char filename[128], line[256], linecpy[256], *path, refill[2048];
+  char *m, *h;
+  m = malloc(2);
+  h = malloc(2);
+  path = malloc(128);
+  pid_t child;
+
+  if (args[1] != NULL) {
+    if (strcmp(args[1],"-l") == 0) {
+      strcpy(filename,getenv("HOME"));
+      strcat(filename,"/.kush/crontabjobs");
+      file = fopen(filename,"a");
+      fclose(file);
+      file = fopen(filename,"r");
+      while(fgets(line, 256, file) != NULL)
+      {
+        if (strcmp(line,"") == 0) break;
+        m = strtok(line," ");
+        h = strtok(NULL," ");
+        strtok(NULL," "); // day
+        strtok(NULL," "); // month
+        strtok(NULL," "); // year
+        strtok(NULL," "); // rm
+        strtok(NULL," "); // -rf
+        path = strtok(NULL," "); //path
+        strtok(NULL," "); // end
+
+        printf("%s.%s %s",h,m,path);
+      }
+      fclose(file);
+    } else if (strcmp(args[1],"-r") == 0) {
+      strcpy(filename,getenv("HOME"));
+      strcat(filename,"/.kush/crontabjobs");
+      strcat(args[2],"/*\n");
+      strcpy(refill,"");
+      file = fopen(filename,"r");
+      while(fgets(line, 256, file) != NULL)
+      {
+        if (strcmp(line,"") == 0) break;
+        strcpy(linecpy,line);
+        m = strtok(line," ");
+        h = strtok(NULL," ");
+        strtok(NULL," "); // day
+        strtok(NULL," "); // month
+        strtok(NULL," "); // year
+        strtok(NULL," "); // rm
+        strtok(NULL," "); // -rf
+        path = strtok(NULL," "); //path
+        strtok(NULL," "); // end
+
+        if ((strcmp(path,args[2]) != 0)) {
+          strcat(refill,m);
+          strcat(refill," ");
+          strcat(refill,h);
+          strcat(refill," * * * rm -rf ");
+          strcat(refill,path);
+        } else {
+          printf("%s is removed\n", path);
+        }
+      }
+      fclose(file);
+      //strcat(refill,'\0');d
+      file2 = fopen(filename,"w");
+      fprintf(file2, "%s", refill);
+      fclose(file2);
+
+      if ((child = fork()) < 0) {
+        perror("Fork fails");
+      }
+      if (child == 0) {
+        if (execv("/usr/bin/crontab", (char*[]){"/usr/bin/crontab","-r",NULL}) == -1) {
+          perror("crontab\n");
+        }
+      } else {
+        wait();
+        if ((child = fork()) < 0) {
+          perror("Fork fails");
+        }
+        if (child == 0) {
+          if (execv("/usr/bin/crontab", (char*[]){"/usr/bin/crontab",filename,NULL}) == -1) {
+            perror("crontab\n");
+          }
+        } else {
+          wait();
+        }
+      }
+
+    } else {
+      strcpy(filename,getenv("HOME"));
+      strcat(filename,"/.kush/crontabjobs");
+      file = fopen(filename,"a");
+      h = strtok(args[1],".");
+      m = strtok(NULL,".");
+      fprintf(file,"%s %s * * * rm -rf %s/*\n", m, h, args[2]);
+      fclose(file);
+      if ((child = fork()) < 0) {
+        perror("Fork fails");
+      }
+      if (child == 0) {
+        if (execv("/usr/bin/crontab", (char*[]){"/usr/bin/crontab",filename,NULL}) == -1) {
+          perror("crontab\n");
+        }
+      } else {
+        wait();
+      }
+    }
+  }
+}
+
 void killChild(pid_t pid)
 {
   kill(pid, SIGUSR1);
+}
+
+void whereiscall(int* pfdout, char* cmd) {
+  char* argw[3];
+
+  close(pfdout[READ_END]);
+
+  argw[0] = "/usr/bin/whereis";
+  argw[1] = cmd;
+  argw[2] = NULL;
+
+  dup2(pfdout[WRITE_END],fileno(stdout));  // send stdout to the pipe
+
+  if (execv(argw[0], argw) == -1) {
+    perror("whereis error\n");
+  }
 }
 
 void cd(char* args[]) {
