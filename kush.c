@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <signal.h>
+#include <stdbool.h>
 
 #define MAX_LINE       80 /* 80 chars per line, per command, should be enough. */
 
@@ -17,20 +18,38 @@
 #define READ_END 0
 #define WRITE_END 1
 
+int lastpid = -1;
+
 int parseCommand(char inputBuffer[], char *args[],int *background);
 void killChild(pid_t pid);
+int checkForPipe(char *buffer[]);
+int checkForArrow(char *buffer[]);
+int checkForDoubleArrow(char *buffer[]);
+void writeInto(int type, char buffer[], char name[]);
 void whereiscall(int* pfdout, char* cmd);
 void cd(char* args[]);
 void trash(char* args[]);
+void dizipub(char* args[]);
+void schedInfo(char* args[]);
+
+void sigquit( int signo )
+{
+  if(lastpid >= 0)
+    system("sudo rmmod schedInfo");
+  exit(0);
+}
 
 void init(void) {
   char kushdir[64], cmd[70];
   struct stat sb;
 
+  printf("\e[H\e[2J");
   printf("Welcome to kush.\n");
 
   strcpy(kushdir, getenv("HOME"));
   strcat(kushdir, "/.kush");
+
+  setenv("KUSHDIR",kushdir,1);
 
   if (stat(kushdir, &sb) == 0 && S_ISDIR(sb.st_mode))
   {
@@ -44,23 +63,37 @@ void init(void) {
     strcat(cmd,kushdir);
     system(cmd);
     printf("kush directory created under home: %s\n", kushdir);
+    strcpy(cmd,"cp schedInfo.c Makefile ");
+    strcat(cmd,kushdir);
+    system(cmd);
+    chdir(kushdir);
+    strcpy(cmd,"make");
+    system(cmd);
+    chdir(getenv("PWD"));
   }
+
+  signal(SIGQUIT, sigquit);
+  signal(SIGINT, sigquit);
 }
 
 int main(void)
 {
   char inputBuffer[MAX_LINE]; 	        /* buffer to hold the command entered */
   int background;             	        /* equals 1 if a command is followed by '&' */
-  char *args[MAX_LINE/2 + 1],*args2[2]; /* command line (of 80) has max of 40 arguments */
-  pid_t execchild, whereischild, whichchild;            		/* process id of the child process */
+  char *args[MAX_LINE/2 + 1],*args2[2],*args3[2]; /* command line (of 80) has max of 40 arguments */
+  pid_t execchild, whereischild, whichchild, pipeChild;            		/* process id of the child process */
   int status;           		/* result from execv system call*/
   int shouldrun = 1;
 
-  int i, upper, err;
+  char *name[1];
+  int i, upper, err, arrowCounter, pipeCounter;
 
-  int pfd[2],pfd2[2],pfd3[2];
-  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128];
-  int whereislength, commandLength, outLength;
+  int pfd[2],pfd2[2],pfd3[2],pfd4[2];
+  char outputbuffer[1024*1024], whereisbuffer[128], whichbuffer[128], pipebuffer[128],buff[128];
+  int whereislength, commandLength, outLength, pipeLength;
+  bool pipeChildIsAlive, belongsParent;
+
+
 
   init();
 
@@ -69,33 +102,60 @@ int main(void)
 
     shouldrun = parseCommand(inputBuffer,args,&background);       /* get next command */
 
-    if (strcmp(inputBuffer, "exit") == 0) {
-      shouldrun = 0;     /* Exiting from kush*/
-    } else if (strcmp(inputBuffer, "clear") == 0) {
-      printf("\e[H\e[2J");
-      continue;
-    } else if (strcmp(inputBuffer, "cd") == 0) {
-      cd(args);
-      continue;
-    } else if (strcmp(inputBuffer, "trash") == 0) {
-      trash(args);
-      continue;
-    }
+
+      if (strcmp(inputBuffer, "exit") == 0) {
+            shouldrun = 0;     /* Exiting from kush*/
+          } else if (strcmp(inputBuffer, "clear") == 0) {
+            printf("\e[H\e[2J");
+            continue;
+          } else if (strcmp(inputBuffer, "cd") == 0) {
+            cd(args);
+            continue;
+          } else if (strcmp(inputBuffer, "trash") == 0) {
+            trash(args);
+            continue;
+          } else if (strcmp(inputBuffer, "dizipub") == 0) {
+            dizipub(args);
+            continue;
+          } else if (strcmp(inputBuffer, "schedInfo") == 0) {
+            schedInfo(args);
+            continue;
+          }
 
     if (shouldrun) {
-      /*
-      After reading user input, the steps are
-      (1) Fork a child process using fork()
-      (2) the child process will invoke execv()
-      (3) if command included &, parent will invoke wait()
-      */
 
-      if (pipe(pfd) < 0 || pipe(pfd2) < 0 || pipe(pfd3) < 0) {
+      if (pipe(pfd) < 0 || pipe(pfd2) < 0 || pipe(pfd3) < 0 || pipe(pfd4) < 0) {
         printf("Failed to create pipe.\n");
         exit(-1);
       }
 
-      //printf("Parent\n");
+      if((pipeCounter = checkForPipe(args)) !=0){
+        pipeChildIsAlive = true;
+        if ((pipeChild = fork()) < 0) {
+          printf("Failed to fork.\n");
+          exit(-1);
+        }
+        //Devide args
+        if(pipeChild == 0){
+          belongsParent = false;
+          args[pipeCounter] = NULL;
+        } else {
+          belongsParent= true;
+          i = 0;
+          pipeCounter++;
+          while(args[pipeCounter]!=0){
+            args[i] = args[pipeCounter];
+            pipeCounter++;
+            i++;
+          }
+          args[i] = NULL;
+          args[i+1] = NULL;
+        }
+      } else {
+        pipeChildIsAlive = false;
+      }
+
+
       if ((execchild = fork()) < 0) {
         printf("Failed to fork.\n");
         exit(-1);
@@ -103,33 +163,50 @@ int main(void)
 
 
       if (execchild == 0) {
-        //printf("Execchild\n");
+
+        if(pipeChildIsAlive && belongsParent){
+          close(pfd4[WRITE_END]);
+          read(pfd4[READ_END], pipebuffer, sizeof(pipebuffer));
+          dup2(pfd4[READ_END], STDIN_FILENO);
+          close(pfd4[READ_END]);
+        }
+
         if ((whichchild = fork()) < 0) {
           printf("Failed to fork.\n");
           exit(-1);
         }
 
         if(whichchild == 0){
-          //printf("Whichchild\n");
+
           if ((whereischild = fork()) < 0) {
             printf("Failed to fork.\n");
             exit(-1);
           }
 
           if (whereischild == 0) {
-            //printf("Wherischild\n");
-            whereiscall(pfd3,args[0]);
+
+            close(pfd3[READ_END]);
+
+            args3[0] = "/usr/bin/whereis";
+            args3[1] = args[0];
+
+            args3[2] = NULL;
+            args3[3] = NULL;
+
+            dup2(pfd3[WRITE_END],fileno(stdout));  // send stdout to the pipe
+
+            if (execv(args3[0], args3) == -1) {
+              perror("whereis error\n");
+            }
 
           } else {
             close(pfd2[READ_END]);
             close(pfd3[WRITE_END]);
-            //printf("waiting to read whereis result\n");
+
             whereislength = read(pfd3[READ_END], whereisbuffer, sizeof(whereisbuffer));
-            // whereislength = whereislength / 2;
+
             killChild(whereischild);
-            // printf("Whereislength: %d\n", whereislength);
-            // printf("Whereis2ndchar: %c\n", whereisbuffer[4]);
-            // printf("Whereis output: %s endo\n", whereisbuffer);
+
             dup2(pfd2[WRITE_END],fileno(stdout));
             wait();
             if (whereisbuffer[whereislength-2] == ':') {
@@ -146,30 +223,57 @@ int main(void)
         } else {
 
           close(pfd2[WRITE_END]);
-          //printf("waiting to read which result\n");
+
           commandLength = read(pfd2[READ_END], whichbuffer, sizeof(whichbuffer));
-          //commandLength = commandLength /2;
+
           killChild(whichchild);
-          //printf("Commandlength: %d.\n", commandLength);
+
 
           for(i = 0; i < commandLength; i++) {
             if (whichbuffer[i] == '\n'){
-              //printf("Command is %d long\n", i);
               whichbuffer[i] = '\0';
               break;
             }
           }
           wait();
-          //printf("Child: Starting to execute command: %s :child\n", whichbuffer);
 
-          close(pfd[READ_END]);
-          dup2(pfd[WRITE_END],fileno(stdout));  // send stdout to the pipe
+
           if (whichbuffer[0] == '!') {
             printf("%s: command not found\n", args[0]);
           } else {
-            args[0] = whichbuffer;
-            if (execv(args[0], args) == -1) {
-              perror("exec error\n");
+
+            if(pipeChildIsAlive && !belongsParent){
+              args[0] = whichbuffer;
+              close(pfd4[READ_END]);
+              dup2(pfd4[WRITE_END], fileno(stdout));  // send stdout to the pipe
+              close(pfd4[WRITE_END]);
+              printf("This is a message\n");
+              if (execv(args[0], args) == -1) {
+                perror("Pipechild: exec error\n");
+              }
+            } else {
+              args[0] = whichbuffer;
+
+              if(!pipeChildIsAlive){
+              close(pfd[READ_END]);
+              dup2(pfd[WRITE_END],fileno(stdout));
+              }
+
+              if((arrowCounter = checkForArrow(args)) != 0){
+                args[arrowCounter] = NULL;
+                if (execv(args[0], args) == -1) {
+                  perror("Single Arrow Error\n");
+                }
+              } else if((arrowCounter = checkForDoubleArrow(args)) != 0){
+                args[arrowCounter] = NULL;
+                if (execv(args[0], args) == -1) {
+                  perror("Doule Arrow Error\n");
+                }
+              } else {
+                if (execv(args[0], args) == -1) {
+                  perror("exec error\n");
+                }
+              }
             }
           }
         }
@@ -180,22 +284,221 @@ int main(void)
           close(pfd[READ_END]);
           close(pfd[WRITE_END]);
         } else {
-          //  printf("Parent is waiting...\n");
+          if(pipeChildIsAlive){
           close(pfd[WRITE_END]);
+          close(pfd4[READ_END]);
+          close(pfd4[WRITE_END]);
+          waitpid(-1,&status,0);
+          waitpid(0,&status,0);
+        }
           outLength = read(pfd[READ_END], outputbuffer, sizeof(outputbuffer));
           killChild(execchild);
           outputbuffer[outLength-1] = '\0';
-          //printf("outLength: %d\n",outLength);
-          if (outLength > 0)
-          printf("%s\n",outputbuffer);
-          wait();
 
-          //  printf("%s \n", "Parent: Killing child");
+          pipeChildIsAlive = false;
+
+          if (outLength > 0){
+
+            if((arrowCounter = checkForArrow(args)) != 0){
+              writeInto(0,outputbuffer, args[arrowCounter+1]);
+            } else if((arrowCounter = checkForDoubleArrow(args)) != 0){
+              writeInto(1,outputbuffer, args[arrowCounter+1]);
+            } else {
+              printf("%s\n",outputbuffer);
+            }
+          }
         }
       }
     }
   }
+  sigquit(0);
   return 0;
+}
+
+void writeInto(int type, char buffer[], char name[]){
+
+  if(type){
+    FILE *f = fopen(name, "a");
+    if (f == NULL){
+      printf("Error opening file!\n");
+      exit(1);
+    }
+    fprintf(f, "%s\n", buffer);
+    fclose(f);
+  } else {
+    FILE *f = fopen(name, "w");
+    if (f == NULL){
+      printf("Error opening file!\n");
+      exit(1);
+    }
+    fprintf(f, "%s\n", buffer);
+    fclose(f);
+  }
+}
+
+int checkForPipe(char *buffer[]){
+  int i;
+  for(i = 0; i < sizeof(buffer); i++){
+    if(!buffer[i])
+    return 0;
+    if(strcmp(buffer[i],"|") == 0)
+    return i;
+  }
+  return 0;
+}
+
+
+int checkForArrow(char *buffer[]){
+  int i;
+  for(i = 0; i < sizeof(buffer); i++){
+    if(!buffer[i])
+    return 0;
+    if(strcmp(buffer[i],">") == 0)
+    return i;
+  }
+  return 0;
+}
+
+int checkForDoubleArrow(char *buffer[]){
+  int i;
+  for(i = 0; i < sizeof(buffer) - 1; i++){
+    if(!buffer[i])
+    return 0;
+    if(strcmp(buffer[i],">>") == 0)
+    return i;
+  }
+  return 0;
+}
+
+void schedInfo(char* args[]) {
+  char* cmd;
+  int pid, pol, pri;
+
+    if (args[3] != NULL) {
+      pid = atoi(args[1]);
+      pol = atoi(args[2]);
+      pri = atoi(args[3]);
+    } else {
+      printf("schedInfo: please provide 3 arguments for pid, policy, priority.\n" );
+      return;
+    }
+
+    if (lastpid == pid) {
+      printf("schedInfo: module for pid=%d is already loaded.\n", pid);
+    } else {
+      if(lastpid >= 0)
+      system("sudo rmmod schedInfo");
+      cmd = malloc(256);
+      sprintf(cmd, "sudo insmod %s/schedInfo.ko processID=%d processSPolicy=%d processPrio=%d", getenv("KUSHDIR"), pid, pol, pri);
+      system(cmd);
+      lastpid = pid;
+    }
+
+  return;
+}
+
+void dizipub(char* args[]) {
+  FILE *file, *file2;
+  char filename[128], line[256];
+  char *name, *s, *e, *lastname, *lasts, *laste, url[128];
+  pid_t child;
+  int ie;
+
+  name = malloc(128);
+  lastname = malloc(128);
+  s = malloc(2);
+  e = malloc(2);
+  lasts = malloc(2);
+  laste = malloc(2);
+
+  strcpy(filename,getenv("HOME"));
+  strcat(filename,"/.kush/dizipublist");
+
+
+  if (args[1] != NULL) {
+    if (strcmp(args[1],"-l") == 0) {
+
+      file = fopen(filename,"a");
+      fclose(file);
+      file = fopen(filename,"r");
+      while(fgets(line, 256, file) != NULL)
+      {
+        if (strcmp(line,"") == 0) break;
+        strcpy(name, strtok(line," "));
+        strcpy(s,strtok(NULL," "));
+        strcpy(e,strtok(NULL," "));
+        if (args[2] == NULL || strcmp(args[2], name) == 0)
+        printf("%s s%s e%s", name, s, e);
+      }
+      fclose(file);
+    } else {
+      if (args[2] == NULL) {
+        printf("dizipub: Usage:\t'dizipub <series> <season> <episode>'\n\t\t'dizipub <series> next'\n");
+        return;
+      }
+      if(strcmp(args[2],"next") == 0) {
+
+        file = fopen(filename,"a");
+        fclose(file);
+        file = fopen(filename,"r");
+
+        lastname[0] = '\0';
+        while(fgets(line, 256, file) != NULL)
+        {
+          if (strcmp(line,"") == 0) break;
+          strcpy(name, strtok(line," "));
+          if (strcmp(args[1], name) == 0) {
+            strcpy(s,strtok(NULL," "));
+            strcpy(e,strtok(NULL," "));
+            strcpy(lastname, name);
+            strcpy(lasts, s);
+            strcpy(laste, e);
+          }
+        }
+
+        if (lastname[0] == '\0' || lastname == NULL) {
+          printf("dizipub: next: Couldn't find a history of %s\n",args[1]);
+          fclose(file);
+          return;
+        }
+
+        fclose(file);
+
+      } else {
+        if (args[2] == NULL || args[3] == NULL) {
+          printf("dizipub: Usage:\t'dizipub <series> [<season> <episode>]'\n\t\t'dizipub <series> [next]'\n");
+          printf("dizipub: Please give both season and episode information for %s\n",args[1]);
+          return;
+        } else {
+            strcpy(s, args[2]);
+            strcpy(e, args[3]);
+        }
+      }
+      strcpy(name,args[1]);
+      if(strcmp(args[2],"next") == 0) {
+        ie = atoi(laste);
+        ie = ie+1;
+        sprintf(e, "%d", ie);
+      }
+      sprintf(url, "http://dizipub.com/%s-%s-sezon-%s-bolum/", name, s, e);
+      printf("Opening %s s%s e%s from %s...\n",name, s, e, url);
+      file2 = fopen(filename,"a");
+      fprintf(file2,"%s ", name);
+      fprintf(file2,"%s ", s);
+      fprintf(file2,"%s\n", e);
+      fclose(file2);
+      if ((child = fork()) < 0) {
+        perror("Fork fails");
+      }
+      if(child ==0){
+        execv("/usr/bin/firefox", (char*[]){"/usr/bin/firefox",url,NULL});
+      }
+    }
+  } else {
+    printf("dizipub: Usage:\t'dizipub <series> [<season> <episode>]'\n\t\t'dizipub <series> [next]'\n");
+    return;
+  }
+  free(lastname);
 }
 
 void trash(char* args[]) {
@@ -371,12 +674,7 @@ void cd(char* args[]) {
   }
 }
 
-/**
-* The parseCommand function below will not return any value, but it will just: read
-* in the next command line; separate it into distinct arguments (using blanks as
-* delimiters), and set the args array entries to point to the beginning of what
-* will become null-terminated, C-style strings.
-*/
+
 
 int parseCommand(char inputBuffer[], char *args[],int *background)
 {
